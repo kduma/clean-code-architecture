@@ -5,117 +5,183 @@ namespace App\Controller;
 
 use DateTime;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\NonUniqueResultException;
+use Exception;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 
 class Controller extends AbstractController
 {
+    private EntityManagerInterface $entityManager;
 
-    function index()
+    /**
+     * Controller constructor.
+     *
+     * @param $entityManager
+     */
+    public function __construct(EntityManagerInterface $entityManager)
+    {
+        $this->entityManager = $entityManager;
+    }
+
+    function index(): JsonResponse
     {
         return new JsonResponse('ReallyDirty API v1.0');
     }
 
-    function doctor(Request $request)
+    function getDoctor(Request $request): JsonResponse
     {
-        if ($request->getMethod() === 'GET') {
-//get doctor
-            $id = $request->get('id');
-            /** @var EntityManagerInterface $man */
-            $man = $this->getDoctrine()->getManager();
+        $id = $request->get('id');
+        $doctor = $this->getDoctorById((int) $id);
 
-// get doctor
-            $doctor = $man->createQueryBuilder()
-                ->select('doctor')
-                ->from(DoctorEntity::class, 'doctor')
-                ->where('doctor.id=:id')
-                ->setParameter('id', $id)
-                ->setMaxResults(1)
-                ->getQuery()
-                ->getOneOrNullResult();
-
-            if ($doctor) {
-                return new JsonResponse([
-                    'id' => $doctor->getId(),
-                    'firstName' => $doctor->getFirstName(),
-                    'lastName' => $doctor->getLastName(),
-                    'specialization' => $doctor->getSpecialization(),
-                ]);
-            } else {
-                return new JsonResponse([], 404);
-            }
-        } elseif ($request->getMethod() === 'POST') {
-//add doctor
-            $man = $this->getDoctrine()->getManager();
-
-            $doctor = new DoctorEntity();
-            $doctor->setFirstName($request->get('firstName'));
-            $doctor->setLastName($request->get('lastName'));
-            $doctor->setSpecialization($request->get('specialization'));
-
-            $man->persist($doctor);
-            $man->flush();
-
-// result
-            return new JsonResponse(['id' => $doctor->getId()]);
+        if (!$doctor) {
+            return new JsonResponse([], 404);
         }
-
-        //TODO other methods?
+        
+        return new JsonResponse([
+            'id' => $doctor->getId(),
+            'firstName' => $doctor->getFirstName(),
+            'lastName' => $doctor->getLastName(),
+            'specialization' => $doctor->getSpecialization(),
+        ]);
     }
 
-    function slots(int $doctorId, Request $request)
+    function postDoctor(Request $request): JsonResponse
     {
-        /** @var EntityManagerInterface $man */
-        $man = $this->getDoctrine()->getManager();
-// get doctor
-        $doc = $man->createQueryBuilder()
+        $doctor = $this->createDoctorFromRequest($request);
+        $this->saveDoctor($doctor);
+
+        return new JsonResponse(['id' => $doctor->getId()]);
+    }
+
+    function getSlots(int $doctorId): JsonResponse
+    {
+        $doctor = $this->getDoctorById((int) $doctorId);
+
+        if (!$doctor) {
+            return new JsonResponse([], 404);
+        }
+        
+        $response = $this->getSlotsForDoctor($doctor);
+
+        return new JsonResponse($response);
+    }
+
+    function postSlots(int $doctorId, Request $request): JsonResponse
+    {
+        $doctor = $this->getDoctorById((int) $doctorId);
+
+        if (!$doctor) {
+            return new JsonResponse([], 404);
+        }
+        
+        $slot = $this->createSlotFromRequest($request);
+        
+        $slot->setDoctor($doctor);
+        $this->saveSlot($slot);
+
+        return new JsonResponse(['id' => $slot->getId()]);
+    }
+
+    /**
+     * @param $id
+     *
+     * @return DoctorEntity|null
+     * @throws NonUniqueResultException
+     */
+    private function getDoctorById($id): ?DoctorEntity
+    {
+        return $this->entityManager->createQueryBuilder()
             ->select('doctor')
             ->from(DoctorEntity::class, 'doctor')
             ->where('doctor.id=:id')
-            ->setParameter('id', $doctorId)
+            ->setParameter('id', $id)
             ->setMaxResults(1)
             ->getQuery()
             ->getOneOrNullResult();
+    }
 
-        if ($doc) {
+    /**
+     * @param DoctorEntity $doctor
+     *
+     * @return array
+     */
+    private function getSlotsForDoctor(DoctorEntity $doctor): array
+    {
+        $slots = $doctor->slots();
 
-            if ($request->getMethod() === 'GET') {
-//get slots
-                /** @var SlotEntity[] $array */
-                $array = $doc->slots();
-
-                if (count($array)) {
-                    $res = [];
-                    foreach ($array as $slot) {
-                        $res[] = [
-                            'id' => $slot->getId(),
-                            'day' => $slot->getDay()->format('Y-m-d'),
-                            'from_hour' => $slot->getFromHour(),
-                            'duration' => $slot->getDuration()
-                        ];
-                    }
-                    return new JsonResponse($res);
-                } else {
-                    return new JsonResponse([]);
-                }
-            } elseif ($request->getMethod() === 'POST') {
-// add slot
-                $slot = new SlotEntity();
-                $slot->setDay(new DateTime($request->get('day')));
-                $slot->setDoctor($doc);
-                $slot->setDuration((int)$request->get('duration'));
-                $slot->setFromHour($request->get('from_hour'));
-
-                $man->persist($slot);
-                $man->flush();
-
-// result
-                return new JsonResponse(['id' => $slot->getId()]);
-            }
-        } else {
-            return new JsonResponse([], 404);
+        $response = [];
+        
+        foreach ($slots as $slot) {
+            $response[] = [
+                'id'        => $slot->getId(),
+                'day'       => $slot->getDay()->format('Y-m-d'),
+                'from_hour' => $slot->getFromHour(),
+                'duration'  => $slot->getDuration()
+            ];
         }
+        
+        return $response;
+    }
+
+    /**
+     * @param Request $request
+     *
+     * @return DoctorEntity
+     */
+    private function createDoctorFromRequest(Request $request): DoctorEntity
+    {
+        $doctor = new DoctorEntity();
+        
+        $doctor->setFirstName($request->get('firstName'));
+        $doctor->setLastName($request->get('lastName'));
+        $doctor->setSpecialization($request->get('specialization'));
+        
+        return $doctor;
+    }
+
+    /**
+     * @param Request $request
+     *
+     * @return SlotEntity
+     * @throws Exception
+     */
+    private function createSlotFromRequest(Request $request): SlotEntity
+    {
+        $slot = new SlotEntity();
+        
+        $slot->setDay(new DateTime($request->get('day')));
+        $slot->setDuration((int)$request->get('duration'));
+        $slot->setFromHour($request->get('from_hour'));
+        
+        return $slot;
+    }
+
+    /**
+     * @param SlotEntity $slot
+     *
+     * @return SlotEntity
+     */
+    private function saveSlot(SlotEntity $slot): SlotEntity
+    {
+        $this->entityManager->persist($slot);
+        $this->entityManager->flush();
+        
+        return $slot;
+    }
+
+    /**
+     * @param DoctorEntity $doctor
+     *
+     * @return DoctorEntity
+     */
+    private function saveDoctor(DoctorEntity $doctor): DoctorEntity
+    {
+        $this->entityManager->persist($doctor);
+        $this->entityManager->flush();
+        
+        return $doctor;
     }
 
 }
